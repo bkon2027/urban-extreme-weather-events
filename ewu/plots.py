@@ -5,6 +5,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
 BLUE, GREY, INK, INK2, GRID, SURF = "#2a78d6", "#9a9994", "#0b0b0b", "#52514e", "#d9d8d4", "#fcfcfb"
 plt.rcParams.update({"font.size": 11, "axes.edgecolor": GRID, "axes.labelcolor": INK2, "xtick.color": INK2,
@@ -79,4 +80,56 @@ def robustness(tests, index: str, title: str):
     ax.set_xlim(min(-2, lo - 1), hi + (hi - min(0, lo)) * 0.6)
     fig.suptitle(title, x=0.01, ha="left", color=INK, fontsize=12.5)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
+    return fig
+
+
+LABELS = {"hot_days": "Hot days", "warm_nights": "Warm nights", "heavy_rain_days": "Heavy-rain days", "cold_nights": "Cold nights"}
+DIVERGING = LinearSegmentedColormap.from_list("blue_gray_red", ["#1c5cab", "#86b6ef", "#f0efec", "#f19a99", "#c42e2d"])
+
+
+def effects(overall, n_pairs: int, years: str):
+    """Mean urban-minus-rural difference with CI for each index (the headline figure)."""
+    fig, ax = plt.subplots(figsize=(9, 3.8))
+    y = np.arange(len(overall))[::-1]
+    ax.axvline(0, color=INK2, lw=1)
+    for yi, r in zip(y, overall.itertuples()):
+        ax.plot([r.ci_low, r.ci_high], [yi, yi], color=BLUE, lw=2, solid_capstyle="round")
+        ax.plot(r.mean_diff, yi, "o", ms=9, color=BLUE, mec=SURF, mew=2)
+        p = "p<0.001" if r.holm_p < 0.001 else f"p={r.holm_p:.3f}"
+        ax.text(max(r.ci_high, 0) + 0.8, yi, f"{r.mean_diff:+.1f}/yr  (Holm {p})", va="center", color=INK, fontsize=10)
+    ax.set_yticks(y, [LABELS[k] for k in overall["index"]], color=INK)
+    ax.tick_params(axis="y", length=0)
+    ax.set_xlabel("Urban minus rural, events per year (mean, 95% bootstrap CI)")
+    hi = overall["ci_high"].max()
+    ax.set_xlim(min(-6, overall["ci_low"].min() - 1), hi * 1.6 + 2)
+    ax.grid(axis="x", color=GRID, lw=0.6); _clean(ax); ax.spines["left"].set_visible(False)
+    fig.suptitle(f"Urban vs. nearby rural weather stations: {n_pairs} U.S. pairs, {years}", x=0.01, ha="left", color=INK, fontsize=12.5)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    return fig
+
+
+def pair_map(pairs, background_lonlat, index: str):
+    """Urban stations coloured by urban-minus-rural difference, over the country's urban areas as faint grey dots."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bg = np.asarray(background_lonlat)
+    keep = (bg[:, 0] > -125) & (bg[:, 0] < -66) & (bg[:, 1] > 24) & (bg[:, 1] < 50)
+    ax.scatter(bg[keep, 0], bg[keep, 1], s=3, color="#d6d5d0", lw=0, zorder=1, label="Census urban areas")
+    for r in pairs.itertuples():
+        ax.plot([r.urban_lon, r.rural_lon], [r.urban_lat, r.rural_lat], color=INK2, lw=0.8, zorder=2)
+    vals = pairs[f"{index}_diff"]
+    lim = float(np.nanpercentile(np.abs(vals), 95))
+    sc = ax.scatter(pairs["urban_lon"], pairs["urban_lat"], c=vals, cmap=DIVERGING, norm=TwoSlopeNorm(0, -lim, lim),
+                    s=70, edgecolor=INK2, lw=0.8, zorder=3)
+    cb = fig.colorbar(sc, ax=ax, shrink=0.7, pad=0.01, extend="both")
+    cb.set_label(f"Urban minus rural {LABELS[index].lower()} per year", color=INK2)
+    cb.outline.set_visible(False)
+    ax.set_xlim(-125, -66); ax.set_ylim(24, 50); ax.set_aspect(1.25)
+    ax.set_xticks([]); ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    fig.suptitle(f"{len(pairs)} urban–rural station pairs: red = more {LABELS[index].lower()} at the urban station",
+                 x=0.01, ha="left", color=INK, fontsize=12.5)
+    fig.text(0.01, 0.02, "Dots: urban stations; short lines connect each to its rural partner. Grey: all Census 2020 urban areas.",
+             color=INK2, fontsize=8.5)
+    fig.tight_layout(rect=(0, 0.04, 1, 0.95))
     return fig

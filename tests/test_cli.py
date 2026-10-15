@@ -75,13 +75,15 @@ def _write_reference_geography(ref):
         for f in ("UACE20", "NAME20"):
             w.field(f, "C", 60)
         w.field("ALAND20", "N", 18, 0)
+        w.field("INTPTLAT20", "C", 12)
+        w.field("INTPTLON20", "C", 12)
         for i in range(3):
             lat, lon = 38.0, -99.0 + i
             lines.append(f"USW0000000{i} {lat:8.4f} {lon:9.4f} {600.0:6.1f}    TOWN {i} AP")
             lines.append(f"USC0000000{i} {lat + 0.27:8.4f} {lon:9.4f} {610.0:6.1f}    RURAL {i}")
             d = 0.03
             w.poly([[(lon - d, lat - d), (lon - d, lat + d), (lon + d, lat + d), (lon + d, lat - d), (lon - d, lat - d)]])
-            w.record(str(i), f"Town {i}", 30_000_000)
+            w.record(str(i), f"Town {i}", 30_000_000, f"{lat:+.7f}", f"{lon:+.7f}")
     (ref / "ghcnd-stations.txt").write_text("\n".join(l.ljust(85) for l in lines) + "\n")
     with zipfile.ZipFile(ref / "tl_2020_us_uac20.zip", "w") as z:
         for ext in (".shp", ".shx", ".dbf"):
@@ -105,7 +107,7 @@ def test_analyze_end_to_end_on_synthetic_pairs(tmp_path, capsys):
     cfg = tmp_path / "c.json"
     cfg.write_text(json.dumps({"start_year": 2015, "end_year": 2016, "min_good_years": 2, "n_boot": 500, "top_n": 3,
                                "pairs": str(tmp_path / "pairs.csv"), "raw_dir": str(raw), "reference_dir": str(ref),
-                               "results_dir": str(tmp_path / "results")}))
+                               "results_dir": str(tmp_path / "results"), "docs_dir": str(tmp_path / "docs")}))
     assert cli.main(["--config", str(cfg), "--stage", "analyze"]) == 0
     overall = pd.read_csv(tmp_path / "results" / "results_overall.csv").set_index("index")
     assert overall.loc["warm_nights", "mean_diff"] > 0
@@ -117,4 +119,15 @@ def test_analyze_end_to_end_on_synthetic_pairs(tmp_path, capsys):
     assert summary["urban_airport"].all() and not summary["rural_airport"].any()
     ranking = pd.read_csv(tmp_path / "results" / "ranking_warm_nights.csv")
     assert len(ranking) == 3 and list(ranking["rank"]) == [1, 2, 3]
-    assert (tmp_path / "results" / "figures" / "ranking_warm_nights.png").exists()
+    assert cli.main(["--config", str(cfg), "--stage", "report"]) == 0
+    page = (tmp_path / "docs" / "RESULTS.md").read_text()
+    assert "## Key findings" in page and "Town" in page
+    for name in ("effects_by_index", "map_warm_nights", "urban_influence_check", "robustness_warm_nights", "ranking_warm_nights"):
+        assert (tmp_path / "docs" / "figures" / f"{name}.png").exists()
+
+
+def test_report_without_results_tells_you_to_analyze(tmp_path, capsys):
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"results_dir": str(tmp_path / "none"), "docs_dir": str(tmp_path / "docs")}))
+    assert cli.main(["--config", str(cfg), "--stage", "report"]) == 1
+    assert "--stage analyze" in capsys.readouterr().err

@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ewu import core, geo, io, plots, stats
+from ewu import core, geo, io, plots, report, stats
 
 log = logging.getLogger("ewu.cli")
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,9 +29,9 @@ DEFAULTS = {
     "seed": 703, "n_boot": 10_000,
     "buffer_min_km": 10.0, "buffer_radius_fraction": 0.5, "coast_near_km": 25.0, "rank_index": "warm_nights", "top_n": 10,
     "pairs": "config/final_pairs.csv", "raw_dir": "data/raw", "reference_dir": "data/reference",
-    "manifest": "data_manifest.csv", "results_dir": "results",
+    "manifest": "data_manifest.csv", "results_dir": "results", "docs_dir": "docs",
 }
-PATH_KEYS = ("pairs", "raw_dir", "reference_dir", "manifest", "results_dir")
+PATH_KEYS = ("pairs", "raw_dir", "reference_dir", "manifest", "results_dir", "docs_dir")
 
 
 class ConfigError(ValueError):
@@ -41,8 +41,8 @@ class ConfigError(ValueError):
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="ewu", description="Urban vs. rural extreme-weather frequency from paired NOAA stations.")
     p.add_argument("--config", help="JSON settings file (e.g. config/ewu.json)")
-    p.add_argument("--stage", choices=["fetch", "analyze", "all"], default="all",
-                   help="fetch: download data; analyze: compute results; all: both (default)")
+    p.add_argument("--stage", choices=["fetch", "analyze", "report", "all"], default="all",
+                   help="fetch: download data; analyze: compute result tables; report: figures + docs/RESULTS.md; all (default)")
     p.add_argument("--coverage-threshold", type=float, help="minimum share of valid days per station-year (default 0.90)")
     p.add_argument("--min-good-years", type=int, help="minimum usable years for a pair to be kept (default 8)")
     p.add_argument("--seed", type=int, help="random seed for bootstrap CIs (default 703)")
@@ -176,6 +176,7 @@ def add_site_flags(pair_summary: pd.DataFrame, s: dict) -> pd.DataFrame:
             "coastal_mismatch": geo.coastal_mismatch(coast[p.urban_station], coast[p.rural_station], s["coast_near_km"]),
             "urban_airport": geo.is_airport(p.urban_station, u["name"]), "rural_airport": geo.is_airport(p.rural_station, r["name"]),
             "urban_station_name": u["name"], "rural_station_name": r["name"],
+            "urban_lat": u["lat"], "urban_lon": u["lon"], "rural_lat": r["lat"], "rural_lon": r["lon"],
         })
     return pd.concat([pair_summary.reset_index(drop=True), pd.DataFrame(rows)], axis=1)
 
@@ -220,16 +221,6 @@ def robustness_and_ranking(pair_summary: pd.DataFrame, pair_years: pd.DataFrame,
         log.info("rank %2d  %-40s %+6.1f/yr  CI %+.1f..%+.1f%s", r.rank, r.urban_area, r.mean_diff, r.ci_low, r.ci_high,
                  "  [airport]" if r.urban_airport else "")
 
-    label = s["rank_index"].replace("_", " ")
-    figs = out / "figures"
-    io.save_figure(plots.ranking(top, f"Top {len(top)} urban areas by extra {label} vs. their rural partner, 2015\u20132024",
-                                 f"Urban minus rural {label} per year"), figs / f"ranking_{s['rank_index']}.png")
-    io.save_figure(plots.distance_check(pair_summary, s["rank_index"], f"Urban minus rural {label} per year",
-                                        w["spearman_rho_vs_rural_edge_km"], w["p"]), figs / "urban_influence_check.png")
-    for k in ("warm_nights", "hot_days"):
-        io.save_figure(plots.robustness(tests, k, f"Robustness: extra {k.replace('_', ' ')} at urban stations across subsets of pairs"),
-                       figs / f"robustness_{k}.png")
-    log.info("wrote figures to %s", figs)
 
 
 def stage_analyze(s: dict, pairs: list[dict]) -> int:
@@ -279,6 +270,36 @@ def stage_analyze(s: dict, pairs: list[dict]) -> int:
     return 0
 
 
+def stage_report(s: dict) -> int:
+    """Figures and docs/RESULTS.md from the result tables (committed, so the findings show on GitHub)."""
+    from datetime import date
+    out, docs = Path(s["results_dir"]), Path(s["docs_dir"])
+    need = ["results_overall.csv", "pair_summary.csv", "robustness_tests.csv", "urban_influence_check.csv", f"ranking_{s['rank_index']}.csv"]
+    missing = [n for n in need if not (out / n).exists()]
+    if missing:
+        raise FileNotFoundError(f"missing result tables in {out}: {missing}; run --stage analyze first")
+    overall, pairs = pd.read_csv(out / need[0]), pd.read_csv(out / need[1])
+    tests, influence, ranking = pd.read_csv(out / need[2]), pd.read_csv(out / need[3]), pd.read_csv(out / need[4])
+    rk, label, figs = s["rank_index"], s["rank_index"].replace("_", " "), docs / "figures"
+    years = f"{s['start_year']}\u2013{s['end_year']}"
+    w = influence.set_index("index").loc[rk]
+    areas = io.read_urban_areas(Path(s["reference_dir"]) / "tl_2020_us_uac20.zip")
+    io.save_figure(plots.effects(overall, len(pairs), years), figs / "effects_by_index.png")
+    io.save_figure(plots.pair_map(pairs, [(a["lon"], a["lat"]) for a in areas], rk), figs / f"map_{rk}.png")
+    io.save_figure(plots.distance_check(pairs, rk, f"Urban minus rural {label} per year", w["spearman_rho_vs_rural_edge_km"], w["p"]),
+                   figs / "urban_influence_check.png")
+    io.save_figure(plots.robustness(tests, rk, f"Robustness: extra {label} at urban stations across subsets of pairs"),
+                   figs / f"robustness_{rk}.png")
+    top = ranking.head(s["top_n"])
+    io.save_figure(plots.ranking(top, f"Top {len(top)} urban areas by extra {label} vs. their rural partner, {years}",
+                                 f"Urban minus rural {label} per year"), figs / f"ranking_{rk}.png")
+    meta = {"date": date.today().isoformat(), "commit": git_commit(), "years": years, "rank_index": rk,
+            "coverage_threshold": s["coverage_threshold"], "min_good_years": s["min_good_years"], "coast_near_km": s["coast_near_km"]}
+    io.write_text(report.build(overall, tests, influence, ranking, pairs, meta, s["top_n"]), docs / "RESULTS.md")
+    log.info("wrote %s and %d figures in %s", docs / "RESULTS.md", 5, figs)
+    return 0
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     started = time.monotonic()
@@ -295,6 +316,8 @@ def main(argv=None) -> int:
             return 1
         if args.stage in ("analyze", "all"):
             stage_analyze(s, pairs)
+        if args.stage in ("report", "all"):
+            stage_report(s)
     except (ConfigError, FileNotFoundError, KeyError, ValueError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1

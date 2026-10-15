@@ -19,5 +19,6 @@
   "buffer_radius_fraction": 0.5,
   "coast_near_km": 25.0,
   "rank_index": "warm_nights",
-  "top_n": 10
+  "top_n": 10,
+  "docs_dir": "docs"
 }
