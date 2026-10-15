@@ -1,0 +1,18 @@
+{
+  "start_year": 2015,
+  "end_year": 2024,
+  "coverage_threshold": 0.90,
+  "min_good_years": 8,
+  "hot_pct": 90,
+  "warm_pct": 90,
+  "cold_pct": 10,
+  "heavy_rain_pct": 95,
+  "wet_day_mm": 1.0,
+  "seed": 703,
+  "n_boot": 10000,
+  "pairs": "config/final_pairs.csv",
+  "raw_dir": "data/raw",
+  "reference_dir": "data/reference",
+  "manifest": "data_manifest.csv",
+  "results_dir": "results"
+}

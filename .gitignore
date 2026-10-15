@@ -1,0 +1,19 @@
+# environments and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.DS_Store
+
+# data: re-downloadable with `python -m ewu.cli --stage fetch` (see data_manifest.csv)
+data/
+
+# generated results: rebuilt by `python -m ewu.cli`
+results/
+*.log
+*.tmp
+
+# secrets (none needed for this project, but never commit them)
+.env
