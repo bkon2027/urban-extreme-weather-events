@@ -20,5 +20,7 @@
   "coast_near_km": 25.0,
   "rank_index": "warm_nights",
   "top_n": 10,
-  "docs_dir": "docs"
+  "docs_dir": "docs",
+  "interior_west_lon": -104.0,
+  "interior_west_inland_km": 100.0
 }

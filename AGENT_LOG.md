@@ -42,3 +42,15 @@ Agent: Claude Code (Anthropic). Agent-written commits are tagged `[agent]`.
 - **Accepted:** _(fill in)_
 - **Rejected/edited:** _(fill in)_
 - **Open:** docs/ is regenerated output committed on purpose; rerun `--stage report` after any analysis change.
+
+## 2026-10-15 — terrain sensitivity: interior-West flag (branch: feat/terrain-check)
+- **Prompt:** the top of the warm-night ranking is mostly mountain-West valley pairs; test whether conclusions depend
+  on them without new data. Non-goal: no elevation model (would need a new data source; left as future work).
+- **Changed:** `ewu/geo.py` (`is_interior_west`), `ewu/cli.py` (flag, two robustness subsets, ranking without the
+  interior West), `ewu/report.py` (terrain finding, second ranking table), `config/ewu.json`, `README.md`,
+  `tests/test_geo.py`, `tests/test_cli.py`.
+- **Ran:** `python -m pytest -q`; full pipeline on real data. Warm nights without interior-West pairs: +11.5/yr
+  (CI +6.3 to +16.8, Holm p = 0.001, n = 55).
+- **Accepted:** _(fill in)_
+- **Rejected/edited:** _(fill in)_
+- **Open:** a topographic position index from a DEM would measure valley exposure directly.

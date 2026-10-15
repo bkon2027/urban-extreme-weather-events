@@ -28,10 +28,14 @@ DEFAULTS = {
     "hot_pct": 90, "warm_pct": 90, "cold_pct": 10, "heavy_rain_pct": 95, "wet_day_mm": 1.0,
     "seed": 703, "n_boot": 10_000,
     "buffer_min_km": 10.0, "buffer_radius_fraction": 0.5, "coast_near_km": 25.0, "rank_index": "warm_nights", "top_n": 10,
+    "interior_west_lon": -104.0, "interior_west_inland_km": 100.0,
     "pairs": "config/final_pairs.csv", "raw_dir": "data/raw", "reference_dir": "data/reference",
     "manifest": "data_manifest.csv", "results_dir": "results", "docs_dir": "docs",
 }
 PATH_KEYS = ("pairs", "raw_dir", "reference_dir", "manifest", "results_dir", "docs_dir")
+
+
+COAST_SEARCH_KM = 100.0
 
 
 class ConfigError(ValueError):
@@ -94,6 +98,8 @@ def validate(s: dict, stage: str) -> None:
         raise ConfigError(f"rank_index must be one of {list(core.INDICES)}; got {s['rank_index']!r}")
     if s["buffer_min_km"] < 0 or not 0 <= s["buffer_radius_fraction"] <= 5:
         raise ConfigError("buffer_min_km must be >= 0 and buffer_radius_fraction between 0 and 5")
+    if not 0 < s["interior_west_inland_km"] <= COAST_SEARCH_KM:
+        raise ConfigError(f"interior_west_inland_km must be in (0, {COAST_SEARCH_KM:.0f}]")
     if not Path(s["pairs"]).exists():
         raise ConfigError(f"pairs file not found: {s['pairs']}")
 
@@ -153,7 +159,7 @@ def add_site_flags(pair_summary: pd.DataFrame, s: dict) -> pd.DataFrame:
     meta = io.read_station_metadata(ref / "ghcnd-stations.txt", stations)
     areas = io.read_urban_areas(ref / "tl_2020_us_uac20.zip")
     tree = STRtree([a["geom"] for a in areas])
-    coast = {sid: geo.coast_distance_km(m["lat"], m["lon"], globe.is_land) for sid, m in meta.items()}
+    coast = {sid: geo.coast_distance_km(m["lat"], m["lon"], globe.is_land, max_km=COAST_SEARCH_KM) for sid, m in meta.items()}
 
     rows = []
     for p in pair_summary.itertuples():
@@ -175,6 +181,9 @@ def add_site_flags(pair_summary: pd.DataFrame, s: dict) -> pd.DataFrame:
             "urban_coast_km": coast[p.urban_station], "rural_coast_km": coast[p.rural_station],
             "coastal_mismatch": geo.coastal_mismatch(coast[p.urban_station], coast[p.rural_station], s["coast_near_km"]),
             "urban_airport": geo.is_airport(p.urban_station, u["name"]), "rural_airport": geo.is_airport(p.rural_station, r["name"]),
+            "interior_west": geo.is_interior_west(u["lon"], coast[p.urban_station], coast[p.rural_station],
+                                                  s["interior_west_lon"], s["interior_west_inland_km"]),
+            "urban_elev_m": u["elev"], "rural_elev_m": r["elev"],
             "urban_station_name": u["name"], "rural_station_name": r["name"],
             "urban_lat": u["lat"], "urban_lon": u["lon"], "rural_lat": r["lat"], "rural_lon": r["lon"],
         })
@@ -193,6 +202,8 @@ def robustness_and_ranking(pair_summary: pd.DataFrame, pair_years: pd.DataFrame,
         "Urban station not an airport": ~pair_summary["urban_airport"],
         "Buffer + coast-matched": clean,
         "Buffer + coast-matched + non-airport": clean & ~pair_summary["urban_airport"],
+        "Excluding interior West": ~pair_summary["interior_west"],
+        "Buffer + coast-matched, excluding interior West": clean & ~pair_summary["interior_west"],
     }
     tests = stats.subset_tests(pair_summary, subsets, core.INDICES, rng, s["n_boot"])
     io.write_csv(tests, out / "robustness_tests.csv")
@@ -214,6 +225,14 @@ def robustness_and_ranking(pair_summary: pd.DataFrame, pair_years: pd.DataFrame,
     flags = pair_summary[["urban_area", "size_group", "pop", "popden", "urban_airport", "rural_edge_km", "urban_station", "rural_station"]]
     ranked = ranked.merge(flags, on="urban_area", how="left")
     io.write_csv(ranked, out / f"ranking_{s['rank_index']}.csv")
+    flags_iw = pair_summary.set_index("urban_area")["interior_west"]
+    ranked["interior_west"] = ranked["urban_area"].map(flags_iw).astype(bool)
+    io.write_csv(ranked, out / f"ranking_{s['rank_index']}.csv")
+    no_west = ranked[~ranked["interior_west"]].reset_index(drop=True)
+    no_west["rank"] = range(1, len(no_west) + 1)
+    io.write_csv(no_west, out / f"ranking_{s['rank_index']}_excl_interior_west.csv")
+    log.info("interior-West pairs: %d of %d; %d of the top 5 are interior West", int(pair_summary["interior_west"].sum()),
+             len(pair_summary), int(ranked.head(5)["interior_west"].sum()))
     if len(ranked) < s["top_n"]:
         log.warning("only %d pairs eligible for ranking (fewer than top_n=%d)", len(ranked), s["top_n"])
     top = ranked.head(s["top_n"])
@@ -295,7 +314,9 @@ def stage_report(s: dict) -> int:
                                  f"Urban minus rural {label} per year"), figs / f"ranking_{rk}.png")
     meta = {"date": date.today().isoformat(), "commit": git_commit(), "years": years, "rank_index": rk,
             "coverage_threshold": s["coverage_threshold"], "min_good_years": s["min_good_years"], "coast_near_km": s["coast_near_km"]}
-    io.write_text(report.build(overall, tests, influence, ranking, pairs, meta, s["top_n"]), docs / "RESULTS.md")
+    no_west_path = out / f"ranking_{rk}_excl_interior_west.csv"
+    no_west = pd.read_csv(no_west_path) if no_west_path.exists() else None
+    io.write_text(report.build(overall, tests, influence, ranking, pairs, meta, s["top_n"], no_west), docs / "RESULTS.md")
     log.info("wrote %s and %d figures in %s", docs / "RESULTS.md", 5, figs)
     return 0
 

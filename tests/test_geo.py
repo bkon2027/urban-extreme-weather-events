@@ -71,3 +71,10 @@ def test_subset_tests_apply_holm_within_each_subset():
     t = stats.subset_tests(ps, masks, ["warm_nights", "hot_days"], np.random.default_rng(0), n_boot=300)
     assert set(t["subset"]) == {"all", "half"} and (t["holm_p"] >= t["wilcoxon_p"]).all()
     assert t.set_index(["subset", "index"]).loc[("half", "warm_nights"), "n_pairs"] == 10
+
+
+def test_interior_west_needs_west_longitude_and_inland_on_both_stations():
+    assert geo.is_interior_west(-112.0, 100.0, 100.0)            # Salt Lake City-like
+    assert not geo.is_interior_west(-99.0, 100.0, 100.0)         # Kansas: east of 104W
+    assert not geo.is_interior_west(-122.0, 30.0, 100.0)         # coastal California
+    assert not geo.is_interior_west(-104.0, 100.0, 100.0)        # boundary: strictly west

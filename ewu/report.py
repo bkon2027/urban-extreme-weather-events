@@ -10,7 +10,8 @@ import pandas as pd
 ALPHA = 0.05
 LABEL = {"hot_days": "hot days", "warm_nights": "warm nights", "heavy_rain_days": "heavy-rain days", "cold_nights": "cold nights"}
 SUBSETS = ["All pairs", "Rural station beyond size-scaled buffer", "Coast-matched pairs", "Urban station not an airport",
-           "Buffer + coast-matched", "Buffer + coast-matched + non-airport"]
+           "Excluding interior West", "Buffer + coast-matched", "Buffer + coast-matched, excluding interior West",
+           "Buffer + coast-matched + non-airport"]
 
 
 def p_text(p: float) -> str:
@@ -38,7 +39,7 @@ def effect_sentence(r, what: str) -> str:
 
 
 def build(overall: pd.DataFrame, tests: pd.DataFrame, influence: pd.DataFrame, ranking: pd.DataFrame,
-          pairs: pd.DataFrame, meta: dict, top_n: int = 10) -> str:
+          pairs: pd.DataFrame, meta: dict, top_n: int = 10, ranking_no_west: pd.DataFrame | None = None) -> str:
     o = overall.set_index("index")
     t = tests.set_index(["subset", "index"])
     inf = influence.set_index("index")
@@ -68,6 +69,14 @@ def build(overall: pd.DataFrame, tests: pd.DataFrame, influence: pd.DataFrame, r
         f"station's distance from the city (Spearman ρ = {signed(rho, 2)}, {p_text(p_inf)}), so there is "
         f"{'evidence' if contaminated else 'no evidence'} that cities warm their rural partners enough to bias the comparison. "
         f"{n_buf} of {n_pairs} pairs pass the size-scaled buffer.")
+    iw = sub("Excluding interior West", rk)
+    n_iw = int(pairs["interior_west"].sum()) if "interior_west" in pairs else 0
+    if iw is not None and n_iw:
+        findings.append(
+            f"- **Terrain sensitivity.** Excluding the {n_iw} interior-West pairs (mountain and basin terrain, where valley sites "
+            f"pool cold air at night), the effect on {LABEL[rk]} is {signed(iw.mean_diff)}/yr (95% CI {signed(iw.ci_low)} to "
+            f"{signed(iw.ci_high)}; Holm {p_text(iw.holm_p)}; n = {int(iw.n_pairs)}), so the result "
+            f"{'does not depend' if iw.holm_p < ALPHA and iw.mean_diff > 0 else 'depends'} on those pairs.")
     rob = [s for s in SUBSETS[1:] if sub(s, rk) is not None and sub(s, rk).holm_p < ALPHA]
     fail = [s for s in SUBSETS[1:] if sub(s, rk) is not None and sub(s, rk).holm_p >= ALPHA]
     line = f"- **Robustness.** The effect on {LABEL[rk]} stays significant in {len(rob)} of {len(rob) + len(fail)} robustness subsets"
@@ -107,8 +116,21 @@ def build(overall: pd.DataFrame, tests: pd.DataFrame, influence: pd.DataFrame, r
                                            for m, a, b in zip(top["mean_diff"], top["ci_low"], top["ci_high"])],
         "Airport urban station": top["urban_airport"].map({True: "yes", False: "no"}),
     })
-    west = top.merge(pairs[["urban_area", "urban_lon"]], on="urban_area")
-    n_west = int((west.head(5)["urban_lon"] < -104).sum())
+    n_west = int(ranking.head(5)["interior_west"].sum()) if "interior_west" in ranking else 0
+    alt = ""
+    if ranking_no_west is not None and len(ranking_no_west):
+        t4 = ranking_no_west.head(top_n)
+        t4 = pd.DataFrame({
+            "Rank": t4["rank"], "Urban area": t4["urban_area"], "Size": t4["size_group"],
+            f"Extra {LABEL[rk]}/yr (95% CI)": [f"{signed(m, 0)} ({signed(a, 0)} to {signed(b, 0)})"
+                                               for m, a, b in zip(t4["mean_diff"], t4["ci_low"], t4["ci_high"])],
+            "Airport urban station": t4["urban_airport"].map({True: "yes", False: "no"}),
+        })
+        alt = f"""
+**The same ranking without the interior West** (a terrain sensitivity check):
+
+{md_table(t4, "rllrl")}
+"""
 
     # --- page -------------------------------------------------------------------------------------
     return f"""# Results: does urbanization change how often places experience extreme weather?
@@ -155,7 +177,8 @@ A size-scaled buffer (rural station at least max(10 km, half the city's effectiv
 ![Robustness of the {LABEL[rk]} effect across subsets](figures/robustness_{rk}.png)
 
 *Coast-matched: excludes pairs where exactly one station is within {meta['coast_near_km']:.0f} km of the ocean.
-Non-airport: urban station is not at an airport.*
+Non-airport: urban station is not at an airport. Interior West: west of 104°W with no ocean within 100 km of either
+station (mountain and basin terrain).*
 
 ## 5. Where does urbanization add the most {LABEL[rk]}?
 
@@ -167,8 +190,10 @@ Ranking of the {len(ranking)} pairs that pass the buffer and are coast-matched, 
 {md_table(t3, "rllrl")}
 
 **Read with care.** Each row is one pair of stations, so a ranking reflects that pair's specific sites as well as the city.
-{n_west} of the top 5 are in the mountain West, where cold air pooling in valleys at rural sites can widen night-time gaps;
-terrain is not modelled. This ranks where urbanization adds the most {LABEL[rk]} today in this sample; it is not a forecast.
+{n_west} of the top 5 are in the interior West (west of 104°W, more than 100 km from the ocean), where cold air pooling in
+valleys at rural sites can widen night-time gaps. Terrain is not modelled directly, so the ranking is repeated without
+those pairs below. This ranks where urbanization adds the most {LABEL[rk]} today in this sample; it is not a forecast.
+{alt}
 
 ## Methods in brief
 
@@ -181,7 +206,9 @@ terrain is not modelled. This ranks where urbanization adds the most {LABEL[rk]}
 ## Limitations
 
 - Many urban stations are at airports; the hot-day signal depends heavily on them.
-- Terrain (valleys, cold-air pooling) is not modelled; the coast flag uses the ocean only (Great Lakes not flagged).
+- Terrain (valleys, cold-air pooling) is not modelled directly; it is tested only by excluding interior-West pairs.
+  A topographic position index from a digital elevation model would be the next step. The coast flag uses the ocean
+  only (Great Lakes not flagged).
 - {n_pairs} pairs is a sample, not every U.S. city; the strictest robustness subset is small.
 - Ten years is too short to estimate trends: results describe {meta['years']}, not the future.
 
