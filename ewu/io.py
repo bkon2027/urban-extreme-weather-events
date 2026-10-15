@@ -210,6 +210,7 @@ def read_urban_areas(path: Path) -> list[dict]:
     for sr in reader.iterShapeRecords():
         rec = dict(zip(fields, sr.record))
         areas.append({"uace": rec["UACE20"], "name": rec["NAME20"], "aland": float(rec["ALAND20"]),
+                      "lat": float(rec["INTPTLAT20"]), "lon": float(rec["INTPTLON20"]),
                       "geom": shape(sr.shape.__geo_interface__)})
     return areas
 
@@ -220,4 +221,11 @@ def save_figure(fig, path: Path, dpi: int = 200) -> None:
     tmp = path.with_name(path.stem + ".tmp" + path.suffix)
     fig.savefig(tmp, dpi=dpi)
     plt.close(fig)
+    os.replace(tmp, path)
+
+
+def write_text(text: str, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)

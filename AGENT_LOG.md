@@ -29,3 +29,16 @@ Agent: Claude Code (Anthropic). Agent-written commits are tagged `[agent]`.
 - **Accepted:** _(fill in after your review)_
 - **Rejected/edited:** _(fill in)_
 - **Open:** terrain (valley cold-air pooling) not modelled; strictest subset (n = 22) underpowered.
+
+## 2026-10-15 — presentable results: report stage, results page, map (branch: feat/report)
+- **Prompt:** make the findings visible on GitHub without hand-copied numbers: a `--stage report` that writes
+  `docs/RESULTS.md` and figures from the result tables; README that leads with the findings; a map of the pairs.
+  Non-goal: no change to the analysis or its numbers.
+- **Changed:** new `ewu/report.py`; `ewu/plots.py` (effects figure, pair map), `ewu/cli.py` (report stage; figures moved
+  out of analyze), `ewu/io.py` (urban-area points, text writer), `config/ewu.json` (`docs_dir`), `README.md`,
+  `tests/test_cli.py` (report stage end to end; missing tables message). Generated: `docs/RESULTS.md`, `docs/figures/`.
+- **Ran:** `python -m pytest -q` (44 passed); `python -m ewu.cli --config config/ewu.json` end to end on real data;
+  numbers unchanged from the previous run.
+- **Accepted:** _(fill in)_
+- **Rejected/edited:** _(fill in)_
+- **Open:** docs/ is regenerated output committed on purpose; rerun `--stage report` after any analysis change.
