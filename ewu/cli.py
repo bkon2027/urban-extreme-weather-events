@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ewu import core, io, stats
+from ewu import core, geo, io, plots, stats
 
 log = logging.getLogger("ewu.cli")
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +27,7 @@ DEFAULTS = {
     "start_year": 2015, "end_year": 2024, "coverage_threshold": 0.90, "min_good_years": 8,
     "hot_pct": 90, "warm_pct": 90, "cold_pct": 10, "heavy_rain_pct": 95, "wet_day_mm": 1.0,
     "seed": 703, "n_boot": 10_000,
+    "buffer_min_km": 10.0, "buffer_radius_fraction": 0.5, "coast_near_km": 25.0, "rank_index": "warm_nights", "top_n": 10,
     "pairs": "config/final_pairs.csv", "raw_dir": "data/raw", "reference_dir": "data/reference",
     "manifest": "data_manifest.csv", "results_dir": "results",
 }
@@ -89,6 +90,10 @@ def validate(s: dict, stage: str) -> None:
     for key in ("hot_pct", "warm_pct", "cold_pct", "heavy_rain_pct"):
         if not 0 < s[key] < 100:
             raise ConfigError(f"{key} must be between 0 and 100; got {s[key]}")
+    if s["rank_index"] not in core.INDICES:
+        raise ConfigError(f"rank_index must be one of {list(core.INDICES)}; got {s['rank_index']!r}")
+    if s["buffer_min_km"] < 0 or not 0 <= s["buffer_radius_fraction"] <= 5:
+        raise ConfigError("buffer_min_km must be >= 0 and buffer_radius_fraction between 0 and 5")
     if not Path(s["pairs"]).exists():
         raise ConfigError(f"pairs file not found: {s['pairs']}")
 
@@ -137,6 +142,96 @@ def iter_pair_results(pairs: list[dict], s: dict) -> Iterator[tuple[dict, pd.Dat
         yield p, diff, usable
 
 
+def add_site_flags(pair_summary: pd.DataFrame, s: dict) -> pd.DataFrame:
+    """Urban-influence buffer, coast distance and airport flags for each pair (see ewu.geo for the rules)."""
+    from global_land_mask import globe
+    from shapely.geometry import Point
+    from shapely.strtree import STRtree
+
+    ref = Path(s["reference_dir"])
+    stations = list(pair_summary["urban_station"]) + list(pair_summary["rural_station"])
+    meta = io.read_station_metadata(ref / "ghcnd-stations.txt", stations)
+    areas = io.read_urban_areas(ref / "tl_2020_us_uac20.zip")
+    tree = STRtree([a["geom"] for a in areas])
+    coast = {sid: geo.coast_distance_km(m["lat"], m["lon"], globe.is_land) for sid, m in meta.items()}
+
+    rows = []
+    for p in pair_summary.itertuples():
+        u, r = meta[p.urban_station], meta[p.rural_station]
+        upt = Point(u["lon"], u["lat"])
+        home = [areas[i] for i in tree.query(upt) if areas[i]["geom"].contains(upt)]
+        if not home:
+            raise ValueError(f"{p.urban_area}: urban station {p.urban_station} is not inside any Census urban area")
+        area = home[0]
+        edge = geo.distance_to_edge_km(r["lat"], r["lon"], area["geom"])
+        radius = geo.effective_radius_km(area["aland"])
+        near = tree.query(Point(r["lon"], r["lat"]).buffer(1.5))
+        any_edge = min((geo.distance_to_edge_km(r["lat"], r["lon"], areas[i]["geom"]) for i in near), default=float("nan"))
+        rows.append({
+            "urban_area_census": area["name"], "ua_radius_km": radius, "rural_edge_km": edge,
+            "required_buffer_km": geo.required_buffer_km(radius, s["buffer_min_km"], s["buffer_radius_fraction"]),
+            "passes_buffer": geo.passes_buffer(edge, radius, s["buffer_min_km"], s["buffer_radius_fraction"]),
+            "rural_nearest_any_ua_km": any_edge,
+            "urban_coast_km": coast[p.urban_station], "rural_coast_km": coast[p.rural_station],
+            "coastal_mismatch": geo.coastal_mismatch(coast[p.urban_station], coast[p.rural_station], s["coast_near_km"]),
+            "urban_airport": geo.is_airport(p.urban_station, u["name"]), "rural_airport": geo.is_airport(p.rural_station, r["name"]),
+            "urban_station_name": u["name"], "rural_station_name": r["name"],
+        })
+    return pd.concat([pair_summary.reset_index(drop=True), pd.DataFrame(rows)], axis=1)
+
+
+def robustness_and_ranking(pair_summary: pd.DataFrame, pair_years: pd.DataFrame, s: dict, out: Path) -> None:
+    from scipy import stats as sps
+
+    rng = np.random.default_rng(s["seed"] + 1)
+    clean = pair_summary["passes_buffer"] & ~pair_summary["coastal_mismatch"]
+    subsets = {
+        "All pairs": pd.Series(True, index=pair_summary.index),
+        "Rural station beyond size-scaled buffer": pair_summary["passes_buffer"],
+        "Coast-matched pairs": ~pair_summary["coastal_mismatch"],
+        "Urban station not an airport": ~pair_summary["urban_airport"],
+        "Buffer + coast-matched": clean,
+        "Buffer + coast-matched + non-airport": clean & ~pair_summary["urban_airport"],
+    }
+    tests = stats.subset_tests(pair_summary, subsets, core.INDICES, rng, s["n_boot"])
+    io.write_csv(tests, out / "robustness_tests.csv")
+    for label, mask in subsets.items():
+        log.info("subset %-42s n=%d", label, int(mask.sum()))
+
+    influence = []
+    for k in core.INDICES:
+        rho, p = sps.spearmanr(pair_summary["rural_edge_km"], pair_summary[f"{k}_diff"])
+        influence.append({"index": k, "spearman_rho_vs_rural_edge_km": float(rho), "p": float(p), "n_pairs": len(pair_summary)})
+    influence = pd.DataFrame(influence)
+    io.write_csv(influence, out / "urban_influence_check.csv")
+    w = influence.set_index("index").loc[s["rank_index"]]
+    log.info("urban-influence check (%s vs rural distance outside edge): rho=%+.2f p=%.2f; %d of %d pairs pass the buffer",
+             s["rank_index"], w["spearman_rho_vs_rural_edge_km"], w["p"], int(pair_summary["passes_buffer"].sum()), len(pair_summary))
+
+    eligible = set(pair_summary.loc[clean, "urban_area"])
+    ranked = stats.rank_pairs(pair_years[pair_years["urban_area"].isin(eligible)], s["rank_index"], rng, s["n_boot"])
+    flags = pair_summary[["urban_area", "size_group", "pop", "popden", "urban_airport", "rural_edge_km", "urban_station", "rural_station"]]
+    ranked = ranked.merge(flags, on="urban_area", how="left")
+    io.write_csv(ranked, out / f"ranking_{s['rank_index']}.csv")
+    if len(ranked) < s["top_n"]:
+        log.warning("only %d pairs eligible for ranking (fewer than top_n=%d)", len(ranked), s["top_n"])
+    top = ranked.head(s["top_n"])
+    for r in top.itertuples():
+        log.info("rank %2d  %-40s %+6.1f/yr  CI %+.1f..%+.1f%s", r.rank, r.urban_area, r.mean_diff, r.ci_low, r.ci_high,
+                 "  [airport]" if r.urban_airport else "")
+
+    label = s["rank_index"].replace("_", " ")
+    figs = out / "figures"
+    io.save_figure(plots.ranking(top, f"Top {len(top)} urban areas by extra {label} vs. their rural partner, 2015\u20132024",
+                                 f"Urban minus rural {label} per year"), figs / f"ranking_{s['rank_index']}.png")
+    io.save_figure(plots.distance_check(pair_summary, s["rank_index"], f"Urban minus rural {label} per year",
+                                        w["spearman_rho_vs_rural_edge_km"], w["p"]), figs / "urban_influence_check.png")
+    for k in ("warm_nights", "hot_days"):
+        io.save_figure(plots.robustness(tests, k, f"Robustness: extra {k.replace('_', ' ')} at urban stations across subsets of pairs"),
+                       figs / f"robustness_{k}.png")
+    log.info("wrote figures to %s", figs)
+
+
 def stage_analyze(s: dict, pairs: list[dict]) -> int:
     raw = Path(s["raw_dir"])
     missing = [sid for p in pairs for sid in (p["urban_station"], p["rural_station"]) if not (raw / f"{sid}.csv").exists()]
@@ -171,12 +266,15 @@ def stage_analyze(s: dict, pairs: list[dict]) -> int:
     overall["holm_p"] = stats.holm(overall["wilcoxon_p"])
 
     out = Path(s["results_dir"])
-    io.write_csv(pd.concat(year_rows, ignore_index=True), out / "pair_year_differences.csv")
+    pair_years = pd.concat(year_rows, ignore_index=True)
+    pair_summary = add_site_flags(pair_summary, s)
+    io.write_csv(pair_years, out / "pair_year_differences.csv")
     io.write_csv(pair_summary, out / "pair_summary.csv")
     io.write_csv(overall, out / "results_overall.csv")
     log.info("analyzed %d pairs (%d pair-years); dropped %d", len(pair_summary), int(pair_summary["n_years"].sum()), len(dropped))
     for r in overall.itertuples():
         log.info("%-15s urban-rural %+6.1f/yr  CI %+.1f..%+.1f  Holm p=%.3g", r.index, r.mean_diff, r.ci_low, r.ci_high, r.holm_p)
+    robustness_and_ranking(pair_summary, pair_years, s, out)
     log.info("wrote %s", out)
     return 0
 

@@ -66,6 +66,28 @@ def _write_station(path, sid, tmin_shift, seed):
     df.to_csv(path / f"{sid}.csv", index=False)
 
 
+def _write_reference_geography(ref):
+    """Tiny GHCN station list and Census urban-area zip: three inland Kansas towns, rural partners 30 km north."""
+    import zipfile
+    import shapefile
+    lines, base = [], ref / "tl_2020_us_uac20"
+    with shapefile.Writer(str(base), shapeType=shapefile.POLYGON) as w:
+        for f in ("UACE20", "NAME20"):
+            w.field(f, "C", 60)
+        w.field("ALAND20", "N", 18, 0)
+        for i in range(3):
+            lat, lon = 38.0, -99.0 + i
+            lines.append(f"USW0000000{i} {lat:8.4f} {lon:9.4f} {600.0:6.1f}    TOWN {i} AP")
+            lines.append(f"USC0000000{i} {lat + 0.27:8.4f} {lon:9.4f} {610.0:6.1f}    RURAL {i}")
+            d = 0.03
+            w.poly([[(lon - d, lat - d), (lon - d, lat + d), (lon + d, lat + d), (lon + d, lat - d), (lon - d, lat - d)]])
+            w.record(str(i), f"Town {i}", 30_000_000)
+    (ref / "ghcnd-stations.txt").write_text("\n".join(l.ljust(85) for l in lines) + "\n")
+    with zipfile.ZipFile(ref / "tl_2020_us_uac20.zip", "w") as z:
+        for ext in (".shp", ".shx", ".dbf"):
+            z.write(base.with_suffix(ext), base.with_suffix(ext).name)
+
+
 def test_analyze_end_to_end_on_synthetic_pairs(tmp_path, capsys):
     import pandas as pd
     raw, ref = tmp_path / "raw", tmp_path / "ref"
@@ -79,8 +101,9 @@ def test_analyze_end_to_end_on_synthetic_pairs(tmp_path, capsys):
     (tmp_path / "pairs.csv").write_text("size_group,urban_area,urban_station,rural_station,distance_km\n" + "\n".join(rows) + "\n")
     pd.DataFrame({"UACE": [1, 2, 3], "NAME": ["Town 0", "Town 1", "Town 2"], "POP": [10_000, 20_000, 30_000],
                   "POPDEN": [1000.0, 2000.0, 3000.0]}).to_excel(ref / "2020_Census_ua_list_all.xlsx", index=False)
+    _write_reference_geography(ref)
     cfg = tmp_path / "c.json"
-    cfg.write_text(json.dumps({"start_year": 2015, "end_year": 2016, "min_good_years": 2, "n_boot": 500,
+    cfg.write_text(json.dumps({"start_year": 2015, "end_year": 2016, "min_good_years": 2, "n_boot": 500, "top_n": 3,
                                "pairs": str(tmp_path / "pairs.csv"), "raw_dir": str(raw), "reference_dir": str(ref),
                                "results_dir": str(tmp_path / "results")}))
     assert cli.main(["--config", str(cfg), "--stage", "analyze"]) == 0
@@ -90,3 +113,8 @@ def test_analyze_end_to_end_on_synthetic_pairs(tmp_path, capsys):
     summary = pd.read_csv(tmp_path / "results" / "pair_summary.csv")
     assert len(summary) == 3 and summary["popden"].tolist() == [1000.0, 2000.0, 3000.0]
     assert (tmp_path / "results" / "run.log").exists()
+    assert summary["passes_buffer"].all() and not summary["coastal_mismatch"].any()
+    assert summary["urban_airport"].all() and not summary["rural_airport"].any()
+    ranking = pd.read_csv(tmp_path / "results" / "ranking_warm_nights.csv")
+    assert len(ranking) == 3 and list(ranking["rank"]) == [1, 2, 3]
+    assert (tmp_path / "results" / "figures" / "ranking_warm_nights.png").exists()

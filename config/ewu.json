@@ -1,7 +1,7 @@
 {
   "start_year": 2015,
   "end_year": 2024,
-  "coverage_threshold": 0.90,
+  "coverage_threshold": 0.9,
   "min_good_years": 8,
   "hot_pct": 90,
   "warm_pct": 90,
@@ -14,5 +14,10 @@
   "raw_dir": "data/raw",
   "reference_dir": "data/reference",
   "manifest": "data_manifest.csv",
-  "results_dir": "results"
+  "results_dir": "results",
+  "buffer_min_km": 10.0,
+  "buffer_radius_fraction": 0.5,
+  "coast_near_km": 25.0,
+  "rank_index": "warm_nights",
+  "top_n": 10
 }

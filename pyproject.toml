@@ -15,6 +15,9 @@ dependencies = [
     "matplotlib>=3.7",
     "openpyxl>=3.1",
     "certifi>=2023.7",
+    "shapely>=2.0",
+    "pyshp>=2.3",
+    "global-land-mask>=1.0",
 ]
 
 [project.optional-dependencies]
