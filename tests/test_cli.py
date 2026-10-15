@@ -117,6 +117,8 @@ def test_analyze_end_to_end_on_synthetic_pairs(tmp_path, capsys):
     assert (tmp_path / "results" / "run.log").exists()
     assert summary["passes_buffer"].all() and not summary["coastal_mismatch"].any()
     assert summary["urban_airport"].all() and not summary["rural_airport"].any()
+    assert not summary["interior_west"].any()
+    assert (tmp_path / "results" / "ranking_warm_nights_excl_interior_west.csv").exists()
     ranking = pd.read_csv(tmp_path / "results" / "ranking_warm_nights.csv")
     assert len(ranking) == 3 and list(ranking["rank"]) == [1, 2, 3]
     assert cli.main(["--config", str(cfg), "--stage", "report"]) == 0

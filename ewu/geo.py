@@ -90,3 +90,12 @@ def is_airport(station_id: str, name: str) -> bool:
     if station_id in NOT_AIRPORTS:
         return False
     return station_id in CONFIRMED_AIRPORTS or bool(AIRPORT_NAME.search(name.upper()))
+
+
+def is_interior_west(urban_lon: float, urban_coast_km: float, rural_coast_km: float,
+                     lon_max: float = -104.0, inland_km: float = 100.0) -> bool:
+    """Pair in the mountain/basin interior West: west of lon_max with no ocean within inland_km of either station.
+
+    A sensitivity flag for terrain: valley and basin sites there are prone to night-time cold-air pooling.
+    """
+    return urban_lon < lon_max and urban_coast_km >= inland_km and rural_coast_km >= inland_km
