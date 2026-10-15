@@ -19,6 +19,15 @@ more often than nearby rural stations?
   Exceedance is strict: a value equal to the threshold is not an event. Rates are per 365 valid days.
 - **Statistics.** Urban-minus-rural difference per pair; Wilcoxon signed-rank test, 95% bootstrap CI
   (seeded), Holm correction across the four indices.
+- **Urban influence on the rural station.** A large city can warm its "rural" partner. Each rural station's
+  distance outside the urban-area edge is measured from the Census boundaries, and a pair passes a
+  size-scaled buffer when that distance is at least max(10 km, half the city's effective radius).
+  The urban-influence check tests whether the urban–rural gap grows with that distance.
+- **Other robustness flags.** Coastal mismatch (exactly one station within 25 km of the ocean; ocean mask from
+  `global-land-mask`, which treats lakes as land) and airport urban stations. The main test is rerun on each subset.
+- **Ranking.** Pairs passing the buffer and coast-matched are ranked by urban excess of warm nights, with a
+  bootstrap CI across each pair's years. This ranks where urbanization currently adds the most warm nights in
+  the sample; it is not a forecast.
 
 ## Setup
 
@@ -41,7 +50,8 @@ python -m ewu.cli --help
 
 Settings resolve **command line > config file > defaults**. Every run logs the command, effective settings,
 Git commit, counts and outputs to the terminal and `results/run.log`, and exits non-zero on failure.
-Outputs go to `results/` (`results_overall.csv`, `pair_summary.csv`, `pair_year_differences.csv`).
+Outputs go to `results/`: `results_overall.csv`, `pair_summary.csv` (with site flags), `pair_year_differences.csv`,
+`robustness_tests.csv`, `urban_influence_check.csv`, `ranking_warm_nights.csv`, and figures in `results/figures/`.
 
 ## Data and reproducibility
 
@@ -77,12 +87,24 @@ tests/         pytest suite
 
 Dependencies point one way: `cli → io → core/stats`.
 
-## Status and limitations
+## Results (reproduced Oct 15 from a fresh download)
 
-Preliminary exploratory results (Oct 8) are being rebuilt in this tested pipeline. In progress:
-urban-influence check (rural-station distance from the urban edge, size-scaled buffer), coastal matching,
-airport flags, and the warm-nights ranking. Known limitations: many urban stations sit at airports;
-coastal and mountain-valley pairs can confound comparisons; 10 years is too short to estimate trends.
+65 pairs, 611 pair-years. Urban stations record **+13.4 warm nights/yr** (95% CI +7.4 to +19.5) and **+10.0 hot
+days/yr** (+5.9 to +14.3) more than their rural partners (Holm p < 0.001 for both); no clear effect on heavy rain
+or cold nights. The **urban-influence check finds no trend** of the gap with the rural station's distance from the
+city (Spearman rho = −0.07, p = 0.59), and the warm-night effect holds for pairs beyond the size-scaled buffer
+(+15.3/yr, n = 46), coast-matched pairs (+11.6/yr, n = 59) and non-airport urban stations (+12.3/yr, n = 30).
+The hot-day effect does not survive excluding airports. With all three filters (n = 22) the warm-night estimate
+stays positive (+8.8/yr) but is no longer significant.
+
+## Limitations
+
+- Many urban stations sit at airports; the hot-day signal is largely an airport effect.
+- Single-pair rankings are sensitive to the chosen rural station's microclimate. The top of the warm-night
+  ranking is dominated by Intermountain West pairs (Spokane, Provo–Orem, Idaho Falls, Salt Lake City), where cold
+  air pooling in valleys at rural sites can widen the gap; terrain is not modelled.
+- The coast flag uses ocean only; Great Lakes shores are not flagged.
+- Ten years is too short to estimate trends; results describe 2015–2024, not the future.
 
 ## AI assistance
 

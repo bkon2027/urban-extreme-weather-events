@@ -21,6 +21,8 @@ from pathlib import Path
 
 import certifi
 import pandas as pd
+import shapefile
+from shapely.geometry import shape
 
 log = logging.getLogger(__name__)
 
@@ -181,4 +183,41 @@ def write_csv(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     df.to_csv(tmp, index=False)
+    os.replace(tmp, path)
+
+
+def read_station_metadata(path: Path, station_ids: Iterable[str]) -> dict[str, dict]:
+    """Latitude, longitude, elevation (m) and name for the requested GHCN stations (fixed-width file)."""
+    wanted = set(station_ids)
+    out = {}
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            sid = line[0:11]
+            if sid in wanted:
+                out[sid] = {"lat": float(line[12:20]), "lon": float(line[21:30]),
+                            "elev": float(line[31:37]), "name": line[41:71].strip()}
+    missing = wanted - set(out)
+    if missing:
+        raise KeyError(f"{len(missing)} stations not found in {path.name} (e.g. {sorted(missing)[0]})")
+    return out
+
+
+def read_urban_areas(path: Path) -> list[dict]:
+    """Census 2020 urban-area polygons (read straight from the TIGER zip): UACE, name, land area (m^2), geometry."""
+    reader = shapefile.Reader(str(path))
+    fields = [f[0] for f in reader.fields[1:]]
+    areas = []
+    for sr in reader.iterShapeRecords():
+        rec = dict(zip(fields, sr.record))
+        areas.append({"uace": rec["UACE20"], "name": rec["NAME20"], "aland": float(rec["ALAND20"]),
+                      "geom": shape(sr.shape.__geo_interface__)})
+    return areas
+
+
+def save_figure(fig, path: Path, dpi: int = 200) -> None:
+    import matplotlib.pyplot as plt
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.stem + ".tmp" + path.suffix)
+    fig.savefig(tmp, dpi=dpi)
+    plt.close(fig)
     os.replace(tmp, path)
